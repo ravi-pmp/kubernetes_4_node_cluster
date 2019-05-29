@@ -1,0 +1,184 @@
+---
+- hosts: master
+  become: True
+  tasks:
+    - name: add docker repo 
+      yum_repository: 
+        name: docker
+        description: docker repo
+        gpgcheck: 0
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        baseurl: https://download.docker.com/linux/centos/7/x86_64/stable
+        #baseurl: 'https://download.docker.com/linux/centos/7/$basearch/stable'
+        state: present
+      tags: docker_repo
+
+    - name: add kubernetes repo 
+      yum_repository: 
+        name: kubernetes
+        description: kubernetes repo
+        baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        gpgcheck: 0
+        gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg 
+        state: present
+      tags: kube
+
+
+    - name: install docker pre-req
+      yum: 
+        name: "{{packages}}"
+        #name: yum-utils,device-mapper-persistent-data,lvm2, kubelet, kubeadm, kubectl, epel-release, docker-ce, git, pyOpenSSL
+        state: present 
+      vars:
+        packages:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+          - kubelet
+          - kubeadm
+          - kubectl
+          - epel-release
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - git
+          - pyOpenSSL
+        notify:
+          - docker status
+      tags: packages 
+
+    - name: Add vagrant user to docker group
+      user:
+        name: vagrant
+        group: docker
+      tags: add_vag
+
+    - name: create directory 
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: 0755
+      with_items:
+        - /etc/systemd/system/docker.service.d
+        - /etc/docker
+      tags: create_dir 
+
+    - name: install docker pre-req
+      copy: 
+        src: daemon.json 
+        dest: /etc/docker/daemon.json 
+      tags: docker_conf
+
+
+    - name: start and auto-start docker
+      service: 
+        name: docker
+        state: started
+        enabled: yes  
+
+
+    - name: disable selinux  
+      selinux:
+        policy: targeted
+        state: enforcing
+
+    - name: disable selinux  immediately
+      shell: setenforce=0
+
+    - name: make sysctl change
+      sysctl:
+        name: "{{ item  }}"
+        value: 1
+        sysctl_set: yes
+        state: present
+        reload: yes
+      with_items:
+        - net.ipv4.ip_forward
+        - net.bridge.bridge-nf-call-ip6tables
+        - net.bridge.bridge-nf-call-iptables
+
+    - name: load module 
+      modprobe:
+        name: br_netfilter
+        state: present
+      tags: modprobe
+
+    - name: install sshpass 
+      yum: 
+        name: sshpass 
+        state: present 
+      tags: sshpass
+
+    - name: Remove swapfile from /etc/fstab
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+      tags: swap
+
+    - name: Disable swap
+      shell: swapoff -a
+      tags: swap_now
+
+    - name: Disable firewall
+      service: 
+        name: firewalld
+        state: stopped
+        enabled: no
+
+
+    - name:  switch off swap now 
+      shell: swapoff -a
+      tags: swap_now
+
+
+    - name: Configure node ip
+      lineinfile:
+        path: /etc/sysconfig/kubelet
+        line: KUBELET_EXTRA_ARGS=--node-ip={{ hostvars[inventory_hostname].ansible_eth1.ipv4.address }}
+        create: yes
+      tags: ip_kube
+
+    - name: Restart kubelet
+      service:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+        enabled: yes
+      tags: restart_kubelet 
+
+    - name: Initialize the Kubernetes cluster using kubeadm
+      command: kubeadm init --apiserver-advertise-address="172.16.121.120" --apiserver-cert-extra-sans="172.16.121.120"  --node-name master --pod-network-cidr=172.16.0.0/16
+      when: inventory_hostname == "master"
+      tags: init_master
+      
+    - name: Setup kubeconfig for vagrant user
+      shell: "{{ item }}"
+      with_items:
+        - mkdir -p /home/vagrant/.kube
+        - cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
+        - chown vagrant:vagrant /home/vagrant/.kube/config
+      when: inventory_hostname == "master"
+      tags: kubeconfig
+
+    - name: Install calico pod network
+      become: false
+      command: kubectl create -f https://docs.projectcalico.org/v3.4/getting-started/kubernetes/installation/hosted/calico.yaml
+      tags: install_calico
+
+    - name: Generate join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+      tags: join_command1
+
+    - name: Copy join command to local file
+      local_action: copy content="{{ join_command.stdout_lines[0] }}" dest="./join-command"
+      tags: join_command2
+
+
+  handlers:
+    - name: docker status
+      service: name=docker state=started
+
+
+

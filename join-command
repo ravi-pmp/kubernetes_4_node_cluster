@@ -1,0 +1,1 @@
+kubeadm join 172.16.121.120:6443 --token 13gbpg.wme1bfikitxrip89     --discovery-token-ca-cert-hash sha256:71a4e93d362537b0dbef8847fe22b59f4e1f6e406d7b4587ba06eb6721b4249b 
